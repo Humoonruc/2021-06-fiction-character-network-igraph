@@ -1,0 +1,6 @@
+unnamed-chunk-1	!	!=	$	%>%	&	.	.N	::	:=	[[	[<-	~	==	>	aes	arrange	bind_cols	c	centrality_betweenness	character	circle	colnames<-	data.table	deg	desc	dev.off	diag	drop_na	extract	F	factor	filter	for	geom_edge_fan	geom_node_point	geom_node_text	ggsave	group	group_infomap	guides	head	if	integer	labs	layout	length	list	list.files	map_chr	map_dfc	map_int	max	mutate	mytheme_graph	n_name	n_word	name	nrow	plot	plot_ly	png	pull	readLines	reduce	rep	round	rownames<-	saveWidget	scale_color_discrete	scale_edge_width	semi_join	seq_len	set.seed	set_colnames	str_c	str_count	str_detect	str_length	str_replace	str_replace_all	str_split	str_trim	sum	T	text	transitivity	unique
+unnamed-chunk-2	$	::	origins
+unnamed-chunk-3	$	::	origins
+unnamed-chunk-4	$	::	origins
+unnamed-chunk-5	$	::	origins
+unnamed-chunk-6	$	::	origins

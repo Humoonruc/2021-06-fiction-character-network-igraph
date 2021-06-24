@@ -81,7 +81,6 @@ mytheme_graph <- theme_void() +
   )
 ```
 
-
 ```{r echo=FALSE}
 file_list <- list.files("./txt/") %>% data.table(name = .)
 
@@ -388,6 +387,10 @@ for (i in nrow(origins)) {
 }
 ```
 
+
+## 脚本下载
+
+该网页右上角的 `Code` 下拉菜单
 
 ## 神雕侠侣
 
