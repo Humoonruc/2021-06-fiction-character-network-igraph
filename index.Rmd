@@ -1,0 +1,430 @@
+---
+title: "小说人物关系网络的比较分析"
+subtitle: ''
+author: "Humoon"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_download: true
+    css: ["./css/style.css"]
+    fig_caption: yes
+    theme: united
+    highlight: haddock
+    number_sections: no
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+documentclass: ctexart
+classoption: hyperref,
+---
+
+```{r setup, include = FALSE}
+## global options==================================
+knitr::opts_chunk$set(
+  width = 80,
+  fig.width = 7,
+  fig.asp = 0.618,
+  out.width = "100%",
+  fig.align = "center",
+  fig.path = "figure/",
+  fig.show = "asis",
+  warn = 1,
+  warning = FALSE,
+  message = FALSE,
+  echo = TRUE, # 是否显示代码
+  eval = TRUE, # 是否运行代码块
+  tidy = F, # 代码排版
+  comment = "#", # 每行输出的前缀，为了方便复制粘贴时不会污染代码
+  collapse = F, # 代码与结果是否显示在同一代码块
+  cache = T,
+  cache.comments = T,
+  autodep = T # 自动获得模块间依赖，cache 用
+)
+
+
+## load necessary packages==============================
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(ggthemes)
+library(plotly)
+library(htmlwidgets)
+library(pacman)
+p_load(igraph, ggraph, tidygraph)
+
+pdf.options(family = "GB1")
+
+
+# 自定义网络图样式========================================
+mytheme_graph <- theme_void() +
+  theme(
+    text = element_text(family = "GB1"), # 所有的文本字体
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10),
+    plot.caption = element_text(
+      hjust = 0, size = 6,
+      margin = margin(8, 0, 0, 0, "pt")
+    ),
+    plot.margin = margin(12, 0, 12, 10, "pt"),
+    legend.position = "right",
+    legend.justification = "left",
+    legend.margin = margin(4, 0, 0, 0, "pt"),
+    legend.key.size = unit(0.7, "lines"),
+    legend.title = element_text(
+      size = 7, margin = margin(0, 8, 0, 4, "pt")
+    ),
+    legend.text = element_text(
+      size = 6, margin = margin(0, 8, 0, 4, "pt")
+    )
+  )
+```
+
+
+```{r echo=FALSE}
+file_list <- list.files("./txt/") %>% data.table(name = .)
+
+origins <- file_list[
+  !str_detect(name, "人物名单"),
+][
+  , name := str_replace(name, ".txt$", "")
+][
+  ,
+  `:=`(
+    book_path = str_c("./txt/", name, ".txt"),
+    name_list_path = str_c("./txt/", name, "人物名单.txt"),
+    p1_path = str_c("./figure/", name, "人物出场段落总字数.html"),
+    p2_path = str_c("./figure/", name, "人物出场次数.html"),
+    p3_path = str_c("./figure/", name, "人物关系热力图.png"),
+    p4_path = str_c("./figure/", name, "人物关系聚类图.png"),
+    p5_path = str_c("./figure/", name, "人物关系网络图.pdf"),
+    p6_path = str_c("./figure/", name, "人物关系网络图.png")
+  )
+]
+
+
+# 数据处理主函数
+analysis <- function(origin) {
+
+  ### 初步整理 ================================
+
+  # 读取数据
+  origin_content <- origin$book_path %>%
+    readLines(encoding = "UTF-8") %>%
+    str_trim() %>%
+    data.table(text = .) %>%
+    filter(text != "") %>%
+    drop_na()
+
+  name_list <- origin$name_list_path %>%
+    readLines(encoding = "UTF-8") %>%
+    str_trim() %>%
+    data.table(name = .) %>%
+    filter(name != "") %>%
+    drop_na() %>%
+    pull(name) %>%
+    str_split(" ")
+
+  name_table <- data.table(
+    unique = name_list %>% map_chr(extract(1)),
+    pattern = name_list %>%
+      map_chr(~ str_c(., collapse = ")|(")) %>%
+      map_chr(~ str_glue("({.})"))
+  )
+
+
+  # 统一称呼
+  # 作用于一段文本，将别称替换为唯一称呼，将其封装为函数
+  unify_names <- function(paragraph) {
+    # 此处不能用并行操作，因为不是同时操作n个对象
+    # 而是反复操作一个对象（paragraph），迭代n次
+    reduce(
+      .x = seq_len(length(name_list)),
+      .f = function(text, i) {
+        if (name_list[[i]] %>% length() > 1) {
+          # 将人物的所有别称替换为统一的姓名
+          alias <- name_table$pattern[i]
+          unique_name <- name_table$unique[i]
+          text %>%
+            str_replace_all(alias, unique_name)
+        } else {
+          text
+        }
+      },
+      .init = paragraph
+    )
+  }
+
+  # 为了运行速度（提升数十倍），利用 data.table 的象牙操作符
+  # 原地替换，而非复制文本
+  origin_content[, `:=`(text = unify_names(text), id = 1:.N)]
+
+
+  ### 3. 词频统计 ================================
+
+  # 检测小说的每一段中是否包含某个人物，返回一个布尔列向量
+  if_in_para <- function(name) {
+    origin_content$text %>%
+      str_detect(name)
+  }
+
+  # 迭代姓名向量，分别检测
+  # 所得的若干布尔列向量，组合为一个数据框
+  unified_content <- name_table$unique %>%
+    map_dfc(if_in_para) %>%
+    set_colnames(name_table$unique) %>%
+    bind_cols(origin_content, .)
+
+  # 统计人物名出现次数的函数
+  count_name <- function(name) {
+    unified_content[, text %>% str_count(name) %>% sum()]
+  }
+
+  # 统计包含人物的段落数的函数
+  count_para <- function(name) {
+    unified_content[, sum(unified_content[[name]])]
+  }
+
+  # 统计包含人物的段落的总字数的函数
+  count_word <- function(name) {
+    unified_content[
+      unified_content[[name]] == TRUE,
+      text %>% str_length() %>% sum()
+    ]
+  }
+
+  # 将上述三项统计结果汇总为一个数据框
+  character_freq <- data.table(
+    name = name_table$unique,
+    n_name = name_table$unique %>% map_int(count_name),
+    n_para = name_table$unique %>% map_int(count_para),
+    n_word = name_table$unique %>% map_int(count_word)
+  )
+
+  # 前30名绘图
+  plot_ly(
+    data = character_freq %>% arrange(desc(n_word)) %>% head(30),
+    x = ~name,
+    y = ~n_word,
+    type = "bar"
+  ) %>%
+    layout(
+      xaxis = list(categoryarray = ~name, categoryorder = "array"),
+      yaxis = list(title = "人物出现段落的总字数")
+    ) %>%
+    saveWidget(origin$p1_path, selfcontained = F, libdir = "lib")
+
+  plot_ly(
+    data = character_freq %>% arrange(desc(n_name)) %>% head(30),
+    x = ~name,
+    y = ~n_name,
+    type = "bar"
+  ) %>%
+    layout(
+      xaxis = list(categoryarray = ~name, categoryorder = "array"),
+      yaxis = list(title = "人物出现次数")
+    ) %>%
+    saveWidget(origin$p2_path, selfcontained = F, libdir = "lib")
+
+
+  ## 4. 关系统计 ================================
+  # 计算亲密度的函数，以共同出现段落的总字数为亲密度
+  intimate <- function(name1, name2) {
+    unified_content[
+      unified_content[[name1]] & unified_content[[name2]],
+      text %>% str_length() %>% sum()
+    ]
+  }
+
+  # 构建亲密度矩阵
+  n <- length(name_list)
+  intimate_matrix <- diag(rep(0, n))
+  colnames(intimate_matrix) <- name_table$unique
+  rownames(intimate_matrix) <- name_table$unique
+
+  for (i in 2:n) {
+    for (j in 1:(i - 1)) {
+      intimate_matrix[i, j] <-
+        intimate(name_table$unique[i], name_table$unique[j])
+    }
+  }
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      intimate_matrix[i, j] <- intimate_matrix[j, i]
+    }
+  }
+
+  # 将亲密度矩阵整理为graph的数据结构
+  relations <- data.table(
+    from = character(n * (n - 1) / 2),
+    to = character(n * (n - 1) / 2),
+    intimate = integer(n * (n - 1) / 2)
+  )
+  k <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      k <- k + 1
+      relations[k, "from"] <- name_table$unique[i]
+      relations[k, "to"] <- name_table$unique[j]
+      relations[k, "intimate"] <- intimate_matrix[i, j]
+    }
+  }
+
+  # 筛选亲密度在最高亲密度1/10以上的关系
+  important_relations <-
+    relations[intimate > max(intimate_matrix) / 10, ]
+
+  # 丢弃过于次要的人物，筛选主要人物之间的亲密度矩阵
+  main_characters <-
+    c(important_relations$from, important_relations$to) %>%
+    unique() %>%
+    data.table(name = .)
+
+  main_character_freq <- character_freq %>% semi_join(
+    main_characters,
+    by = "name"
+  )
+
+  main_intimate_matrix <- intimate_matrix[
+    main_characters$name,
+    main_characters$name
+  ]
+
+  # 可视化
+  pheatmap::pheatmap(
+    main_intimate_matrix,
+    cluster_cols = F,
+    cluster_rows = F,
+    filename = origin$p3_path,
+    width = 8, height = 5
+  )
+
+
+  ### 5. 聚类分析 ================================
+
+  # 生成 igraph 类的对象
+  graph <- igraph::graph_from_data_frame(
+    important_relations,
+    vertices = main_character_freq,
+    directed = F
+  )
+
+  # 聚类分析
+  cfg <- igraph::cluster_fast_greedy(graph)
+  
+  # 文字输出
+  # n_group <- max(cfg$membership)
+  # cfg_list <- membership(cfg)
+  # for (i in seq_len(n_group)) {
+  #   cfg_list[cfg_list == i] %>%
+  #     names() %>%
+  #     str_c(collapse = " ") %>%
+  #     str_c("第", i, "组: ", ., "\n") %>%
+  #     cat()
+  # }
+
+  # 可视化
+  png(origin$p4_path, width = 650, height = 550, family = "SimHei")
+  plot(cfg, graph)
+  dev.off()
+
+
+  ### 6. 网络结构分析 ================================
+
+  # 转换为tbl_graph类对象
+  graph_tg <- graph %>%
+    tidygraph::as_tbl_graph() %>%
+    mutate(deg = centrality_betweenness(normalized = T)) %>%
+    # 添加中介中心度
+    mutate(group = group_infomap()) # 添加节点群
+
+  # 绘制 network graph
+  set.seed(3)
+  plot_network <- ggraph::ggraph(graph_tg, layout = "kk") +
+    geom_edge_fan(
+      aes(edge_width = intimate),
+      color = "lightblue",
+      end_cap = circle(0.05, "inches"),
+      show.legend = T
+    ) +
+    geom_node_point(
+      aes(size = deg, fill = factor(group)),
+      # 点的大小也可以映射为人物出现次数等指标
+      # 如 size = count/n_para/n_words
+      shape = 21
+    ) +
+    geom_node_text(
+      aes(label = name),
+      size = 2.5,
+      vjust = 1, hjust = 1
+    ) +
+    scale_color_discrete() +
+    scale_edge_width(range = c(0.1, 2)) +
+    guides(fill = F) +
+    labs(
+      title = "人物关系网络图",
+      subtitle = str_c("集聚系数: ", round(transitivity(graph_tg), 4)),
+      size = "标准化的中介中心度",
+      edge_width = "共同出现的段落字数",
+      caption = "Data Source: 网络上随处可见的小说原文"
+    ) +
+    mytheme_graph
+
+  ggsave(
+    file = origin$p5_path, plot = plot_network,
+    device = "pdf", width = 8.5, height = 5.5
+  )
+  ggsave(
+    file = origin$p6_path, plot = plot_network,
+    device = "png", width = 7, height = 5, dpi = 600
+  )
+}
+
+
+# 调用主函数
+for (i in nrow(origins)) {
+  analysis(origins[i, ])
+}
+```
+
+
+## 神雕侠侣
+
+```{r echo=FALSE}
+knitr::include_graphics(origins[4, ]$p3_path)
+knitr::include_graphics(origins[4, ]$p4_path)
+knitr::include_graphics(origins[4, ]$p6_path)
+```
+
+## 天龙八部
+
+```{r echo=FALSE}
+knitr::include_graphics(origins[5, ]$p3_path)
+knitr::include_graphics(origins[5, ]$p4_path)
+knitr::include_graphics(origins[5, ]$p6_path)
+```
+
+## 三国演义
+
+```{r echo=FALSE}
+knitr::include_graphics(origins[3, ]$p3_path)
+knitr::include_graphics(origins[3, ]$p4_path)
+knitr::include_graphics(origins[3, ]$p6_path)
+```
+
+## 红楼梦
+
+```{r echo=FALSE}
+knitr::include_graphics(origins[1, ]$p3_path)
+knitr::include_graphics(origins[1, ]$p4_path)
+knitr::include_graphics(origins[1, ]$p6_path)
+```
+
+## 魔兽多塔之异世风云
+
+```{r echo=FALSE}
+knitr::include_graphics(origins[2, ]$p3_path)
+knitr::include_graphics(origins[2, ]$p4_path)
+knitr::include_graphics(origins[2, ]$p6_path)
+```
